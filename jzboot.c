@@ -42,6 +42,7 @@ static const uint16_t ingenic_product_ids[] = {
 static uint16_t pid;
 
 static uint32_t stage1_load_addr = STAGE1_LOAD_ADDR;
+static uint32_t stage1_exec_addr = STAGE1_LOAD_ADDR;
 static uint32_t stage2_load_addr = STAGE2_LOAD_ADDR;
 static uint32_t stage2_exec_addr = STAGE2_LOAD_ADDR;
 
@@ -144,6 +145,28 @@ static int check_and_process_uimage_hdr(char **data, size_t *size, uint32_t *loa
 	return 0;
 }
 
+static void skip_image_header(const unsigned char *data, size_t size, uint32_t *exec_addr)
+{
+	const uint32_t *header_ptr = (const uint32_t*)data;
+
+	if (size < 12) {
+		// max size of the header (jz4750)
+		return;
+	}
+	if (le32toh(header_ptr[0]) == 0x4d53504c) {
+		/* `MSPL` header (jz4760+, jz4725b) */
+		*exec_addr += 4;
+		return;
+	}
+	if (le32toh(header_ptr[1]) == 0x55555555) {
+		// jz4750 header
+		*exec_addr += 12;
+		return;
+	}
+	// assume no header or its just does `nop`s (jz4740)
+	return;
+}
+
 static int cmd_load_data(libusb_device_handle *hdl, FILE *f,
 			 uint32_t addr, size_t *data_size)
 {
@@ -179,6 +202,8 @@ static int cmd_load_data(libusb_device_handle *hdl, FILE *f,
 		ret = check_and_process_uimage_hdr(&ptr, &size, &addr, &stage2_exec_addr);
 		if (ret)
 			goto out_free;
+	} else if (addr == stage1_load_addr) {
+		skip_image_header(ptr, size, &stage1_exec_addr);
 	}
 
 	if (data_size)
@@ -232,6 +257,7 @@ int main(int argc, char **argv)
 			return EXIT_SUCCESS;
 		case 'a':
 			stage1_load_addr = strtol(optarg, &end, 16);
+			stage1_exec_addr = stage1_load_addr;
 			if (optarg == end) {
 				fprintf(stderr, "Unable to parse stage1 addr\n");
 				return EXIT_FAILURE;
@@ -318,7 +344,7 @@ int main(int argc, char **argv)
 		goto out_close_dev_handle;
 	}
 
-	ret = cmd_control(hdl, CMD_START1, stage1_load_addr);
+	ret = cmd_control(hdl, CMD_START1, stage1_exec_addr);
 	if (ret) {
 		fprintf(stderr, "Unable to execute stage1 bootloader\n");
 		goto out_close_dev_handle;
